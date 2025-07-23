@@ -55,7 +55,7 @@ python -m http.server 8080
 Then open:
 
 ```
-http://localhost:8080/index.html
+http://localhost:8080/static/index.html
 ```
 
 ## 🧠 How It Works
