@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Silero VAD Demo (Client-side)</title>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+</head>
+<body>
+  <button id="start">Start VAD</button>
+  <div id="result"></div>
+  <script>
+    let model;
+    let ctx, processor;
+    let state, sr;
+
+    async function loadModel() {
+      model = await ort.InferenceSession.create('silero_vad.onnx');
+      // Initialize state and sr for Silero VAD
+      state = new ort.Tensor('float32', new Float32Array(2 * 1 * 128), [2, 1, 128]);
+      sr = new ort.Tensor('int64', new BigInt64Array([BigInt(16000)]), []);
+
+      console.log("model:");
+      console.log("state:", state);
+     
+      console.log("state type:", typeof state);
+      console.log("state dataType:", state.dataType);
+      console.log("state dimensions:", state.dims);
+
+      console.log("sr:", sr);
+      console.log("sr type:", typeof sr);
+      console.log("sr dataType:", sr.dataType);
+      console.log("sr dimensions:", sr.dims);
+
+    }
+
+    function preprocess(input) {
+      // Silero expects float32 PCM, shape [1, N]
+      return new ort.Tensor('float32', Float32Array.from(input), [1, input.length]);
+    }
+
+    async function runVAD(audioBuffer) {
+      const inputTensor = preprocess(audioBuffer);
+      const feeds = { input: inputTensor, state: state, sr: sr };
+      const results = await model.run(feeds);
+      // outputs: [speech_prob, new_state]
+      const output = Object.values(results);
+      const speechProb = output[0].data[0];
+      state = output[1]; // update state for next call
+      document.getElementById('result').innerText = "Speech prob: " + speechProb.toFixed(2);
+    }
+
+    document.getElementById('start').onclick = async () => {
+      document.getElementById('result').innerText = 'Loading model...';
+      await loadModel();
+      document.getElementById('result').innerText = 'Model loaded. Listening...';
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      ctx = new AudioContext({ sampleRate: 16000 });
+      const source = ctx.createMediaStreamSource(stream);
+      // Note: ScriptProcessorNode is deprecated. For production, migrate to AudioWorkletNode.
+      processor = ctx.createScriptProcessor(512, 1, 1);
+
+      source.connect(processor);
+      processor.connect(ctx.destination);
+
+      processor.onaudioprocess = async (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        await runVAD(input);
+      };
+    };
+  </script>
+</body>
+</html>
