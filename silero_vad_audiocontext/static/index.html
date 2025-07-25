@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Silero VAD AudioContext Demo</title>
+</head>
+<body>
+  <button id="start">Start VAD</button>
+  <div id="result"></div>
+  <!-- Add ONNX Runtime Web -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+  <script>
+    let model;
+    let ctx, node;
+    let state, sr;
+    let audioBufferQueue = [];
+    const requiredSamples = 512; 
+
+    async function loadModel() {
+      model = await ort.InferenceSession.create('silero_vad.onnx');
+      state = new ort.Tensor('float32', new Float32Array(2 * 1 * 128), [2, 1, 128]);
+      sr = new ort.Tensor('int64', new BigInt64Array([BigInt(16000)]), []);
+    }
+
+    function preprocess(input) {
+      return new ort.Tensor('float32', Float32Array.from(input), [1, input.length]);
+    }
+
+    async function runVAD(audioBuffer) {
+      try {
+        console.log('Running VAD with buffer length:', audioBuffer.length);
+        const inputTensor = preprocess(audioBuffer);
+        console.log('inputTensor shape:', inputTensor.dims);
+        const feeds = { input: inputTensor, state: state, sr: sr };
+        console.log('feeds:', feeds);
+        const results = await model.run(feeds);
+        console.log('results:', results);
+        const output = Object.values(results);
+        console.log('output[1] shape:', output[1].dims); // Add this
+        const speechProb = output[0].data[0];
+        // Handle extra dimension in state output
+        let stateData = output[1].data;
+        let stateDims = output[1].dims;
+        if (stateDims.length === 4 && stateDims[3] > 1) {
+          // Only take the first state along the last axis
+          // output[1].dims: [2, 1, 128, 3]
+          // We want: [2, 1, 128] (first of the 3)
+          const [a, b, c, d] = stateDims;
+          const singleState = [];
+          for (let i = 0; i < a * b * c; i++) {
+            singleState.push(stateData[i * d]); // take only the first of each group of 3
+          }
+          state = new ort.Tensor('float32', singleState, [2, 1, 128]);
+        } else if (stateDims.length === 4 && stateDims[3] === 1) {
+          // If the last dimension is 1, just squeeze it out
+          state = new ort.Tensor('float32', stateData, [2, 1, 128]);
+        } else {
+          state = new ort.Tensor('float32', stateData, stateDims);
+        }
+        document.getElementById('result').innerText = "Speech prob: " + speechProb.toFixed(2);
+      } catch (err) {
+        console.error('Error in runVAD:', err);
+      }
+    }
+
+    document.getElementById('start').onclick = async () => {
+      document.getElementById('result').innerText = 'Loading model...';
+      await loadModel();
+      ctx = new AudioContext({ sampleRate: 16000 });
+      await ctx.audioWorklet.addModule('vad-processor.js');
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const source = ctx.createMediaStreamSource(stream);
+      node = new AudioWorkletNode(ctx, 'vad-processor');
+
+      // Listen to messages from the audio worklet
+      node.port.onmessage = async (event) => {
+        const audioChunk = event.data;
+        audioBufferQueue.push(...audioChunk);
+
+        while (audioBufferQueue.length >= requiredSamples) {
+          const input = audioBufferQueue.slice(0, requiredSamples);
+          await runVAD(input);
+          audioBufferQueue = audioBufferQueue.slice(requiredSamples);
+        }
+      };
+
+      source.connect(node).connect(ctx.destination);
+      document.getElementById('result').innerText = 'Model loaded. Listening...';
+    };
+  </script>
+</body>
+</html>
