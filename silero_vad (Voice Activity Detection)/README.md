@@ -39,7 +39,7 @@ uvicorn app:app --reload
 Then open in your browser:
 
 ```
-http://localhost:8000
+http://localhost:8000/static/index.html
 ```
 
 ### Option 2: Run Without Python (Static File Server)
